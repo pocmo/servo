@@ -28,6 +28,7 @@ def main():
 
 ping_on_daily_task_failure = "SimonSapin, nox, emilio"
 build_artifacts_expiry = "1 week"
+build_dependencies_artifacts_expiry = "1 month"
 log_artifacts_expiry = "1 year"
 
 build_env = {
@@ -72,11 +73,16 @@ def with_rust_nightly():
 
 
 def windows_dev():
+    python27_task = extract_msi(
+        "https://www.python.org/ftp/python/2.7.15/python-2.7.15.amd64.msi",
+        sha256="5e85f3c4c209de98480acbf2ba2e71a907fd5567a838ad4b6748c76deb286ad7",
+    )
     return decision.create_task(
-        task_name="Windows x86_64: clone only",
+        task_name="Windows x86_64: clone only (for now)",
         worker_type="servo-win2016",
         script="""
             dir
+            dir ..\\python2
         """,
         mounts=[
             {
@@ -88,10 +94,19 @@ def windows_dev():
                     "sha256": "424d24b5fc185a9c5488d7872262464f2facab4f1d4693ea8008196f14a3c19b",
                 }
             },
+            {
+                "directory": "python2",
+                "format": "tar.gz",
+                "content": {
+                    "artifact": "public/extracted.tar.gz",
+                    "taskId": python27_task,
+                }
+            },
         ],
         homedir_path=[
             "git\\cmd",
         ],
+        dependencies=[python27_task],
         **build_kwargs
     )
 
@@ -214,6 +229,33 @@ def daily_tasks_setup():
     decision.task_name_template = "Servo daily: %s. On failure, ping: " + ping_on_daily_task_failure
 
 
+def extract_msi(url, sha256):
+    return decision.find_or_create_task(
+        index_bucket="extract-msi.v1",
+        index_key=sha256,
+        index_expiry=build_dependencies_artifacts_expiry,
+
+        task_name="Extracting MSI file " + url,
+        dockerfile=dockerfile_path("msi-extract"),
+        script="""
+            curl --retry 5 --connect-timeout 10 --location --fail "$MSI_URL" -o input.msi
+            echo "$EXPECTED_SHA256 input.msi" | sha256sum --check
+            mkdir output
+            msiextract input.msi -C output
+            tar -czf /extracted.tar.gz -C output .
+        """,
+        env={
+            "MSI_URL": url,
+            "EXPECTED_SHA256": sha256,
+        },
+        artifacts=[
+            "/extracted.tar.gz"
+        ],
+        max_run_time_minutes=20,
+        with_repo=False,
+    )
+
+
 def dockerfile_path(name):
     return os.path.join(os.path.dirname(__file__), "docker", name + ".dockerfile")
 
@@ -222,6 +264,7 @@ decision = DecisionTask(
     task_name_template="Servo: %s",
     index_prefix="project.servo.servo",
     default_worker_type="servo-docker-worker",
+    docker_image_cache_expiry=build_dependencies_artifacts_expiry,
 )
 
 # https://docs.taskcluster.net/docs/reference/workers/docker-worker/docs/caches
